@@ -1,4 +1,4 @@
-module github.com/libdns/powerdns
+module github.com/vapronva/libdns-powerdns
 
 go 1.24
 
