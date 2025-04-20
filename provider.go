@@ -47,13 +47,11 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 	recs := make([]libdns.Record, 0, len(prec.ResourceRecordSets))
 	for _, rec := range prec.ResourceRecordSets {
 		for _, v := range rec.Records {
-			recs = append(recs, libdns.Record{
-				ID:       prec.ID,
-				Type:     rec.Type,
+			recs = append(recs, libdns.RR{
 				Name:     libdns.RelativeName(rec.Name, zone),
-				Value:    v.Content,
 				TTL:      time.Second * time.Duration(rec.TTL),
-				Priority: 0,
+				Type:     rec.Type,
+				Data:     v.Content,
 			})
 		}
 	}

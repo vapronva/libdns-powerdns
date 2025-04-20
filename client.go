@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/libdns/libdns"
@@ -37,11 +38,9 @@ func newClient(ServerID, ServerURL, APIToken string, debug io.Writer) (*client, 
 }
 
 func (c *client) updateRRs(ctx context.Context, zoneID string, recs []zones.ResourceRecordSet) error {
-	for _, rec := range recs {
-		err := c.Zones().AddRecordSetToZone(ctx, c.sID, zoneID, rec)
-		if err != nil {
-			return err
-		}
+	err := c.Zones().AddRecordSetsToZone(ctx, c.sID, zoneID, recs)
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -59,10 +58,10 @@ func mergeRRecs(fullZone *zones.Zone, records []libdns.Record) ([]zones.Resource
 			rr := zones.ResourceRecordSet{
 				Name:       t.Name,
 				Type:       t.Type,
-				TTL:        int(recs[0].TTL.Seconds()),
+				TTL:        t.TTL,
 				ChangeType: zones.ChangeTypeReplace,
 				Comments:   t.Comments,
-				Records:    make([]zones.Record, len(t.Records)),
+				Records:    slices.Clone(t.Records),
 			}
 			copy(rr.Records, t.Records)
 			// squash duplicate values
@@ -72,11 +71,11 @@ func mergeRRecs(fullZone *zones.Zone, records []libdns.Record) ([]zones.Resource
 			}
 			// now for our additions
 			for _, rec := range recs {
-				if !dupes[rec.Value] {
+				if !dupes[rec.Data] {
 					rr.Records = append(rr.Records, zones.Record{
-						Content: rec.Value,
+						Content: rec.Data,
 					})
-					dupes[rec.Value] = true
+					dupes[rec.Data] = true
 				}
 			}
 			rrsets = append(rrsets, rr)
@@ -109,7 +108,7 @@ func cullRRecs(fullZone *zones.Zone, records []libdns.Record) []zones.ResourceRe
 }
 
 // remove culls from rRSet record values
-func removeRecords(rRSet zones.ResourceRecordSet, culls []libdns.Record) zones.ResourceRecordSet {
+func removeRecords(rRSet zones.ResourceRecordSet, culls []libdns.RR) zones.ResourceRecordSet {
 	deleteItem := func(item string) []zones.Record {
 		recs := rRSet.Records
 		for i := len(recs) - 1; i >= 0; i-- {
@@ -121,12 +120,12 @@ func removeRecords(rRSet zones.ResourceRecordSet, culls []libdns.Record) zones.R
 		return recs
 	}
 	for _, c := range culls {
-		rRSet.Records = deleteItem(c.Value)
+		rRSet.Records = deleteItem(c.Data)
 	}
 	return rRSet
 }
 
-func convertLDHash(inHash map[string][]libdns.Record) []zones.ResourceRecordSet {
+func convertLDHash(inHash map[string][]libdns.RR) []zones.ResourceRecordSet {
 	var rrsets []zones.ResourceRecordSet
 	for _, recs := range inHash {
 		if len(recs) == 0 {
@@ -136,12 +135,12 @@ func convertLDHash(inHash map[string][]libdns.Record) []zones.ResourceRecordSet 
 		rr := zones.ResourceRecordSet{
 			Name:       recs[0].Name,
 			Type:       recs[0].Type,
-			TTL:        int(recs[0].TTL.Seconds()),
+			TTL:        int(recs[0].TTL),
 			ChangeType: zones.ChangeTypeReplace,
 		}
 		for _, rec := range recs {
 			rr.Records = append(rr.Records, zones.Record{
-				Content: rec.Value,
+				Content: rec.Data,
 			})
 		}
 		rrsets = append(rrsets, rr)
@@ -153,13 +152,13 @@ func key(Name, Type string) string {
 	return Name + ":" + Type
 }
 
-func makeLDRecHash(records []libdns.Record) map[string][]libdns.Record {
+func makeLDRecHash(records []libdns.Record) map[string][]libdns.RR {
 	// Keep track of records grouped by name + type
-	inHash := make(map[string][]libdns.Record)
+	inHash := make(map[string][]libdns.RR)
 
 	for _, r := range records {
-		k := key(r.Name, r.Type)
-		inHash[k] = append(inHash[k], r)
+		k := key(r.RR().Name, r.RR().Type)
+		inHash[k] = append(inHash[k], r.RR())
 	}
 	return inHash
 }
@@ -200,15 +199,22 @@ func (c *client) zoneID(ctx context.Context, zoneName string) (string, error) {
 func convertNamesToAbsolute(zone string, records []libdns.Record) []libdns.Record {
 	out := make([]libdns.Record, len(records))
 	copy(out, records)
-	for i := range out {
-		name := libdns.AbsoluteName(out[i].Name, zone)
-		if !strings.HasSuffix(name, ".") {
-			name = name + "."
+	for _, rec := range records {
+		r := rec.RR()
+		abs := libdns.AbsoluteName(r.Name, zone)
+		if !strings.HasSuffix(abs, ".") {
+			abs += "."
 		}
-		out[i].Name = name
-		if out[i].Type == "TXT" {
-			out[i].Value = txtsanitize.TXTSanitize(out[i].Value)
+		data := r.Data
+		if r.Type == "TXT" {
+			data = txtsanitize.TXTSanitize(data)
 		}
+		out = append(out, libdns.RR{
+			Name: abs,
+			TTL:  r.TTL,
+			Type: r.Type,
+			Data: data,
+		})
 	}
 	return out
 }
