@@ -197,8 +197,7 @@ func (c *client) zoneID(ctx context.Context, zoneName string) (string, error) {
 }
 
 func convertNamesToAbsolute(zone string, records []libdns.Record) []libdns.Record {
-	out := make([]libdns.Record, len(records))
-	copy(out, records)
+	out := make([]libdns.Record, 0, len(records))
 	for _, rec := range records {
 		r := rec.RR()
 		abs := libdns.AbsoluteName(r.Name, zone)
