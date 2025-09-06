@@ -1,10 +1,10 @@
 module github.com/vapronva/libdns-powerdns
 
-go 1.24
+go 1.25
 
 require (
-	github.com/libdns/libdns v1.0.0-beta.1
-	github.com/mittwald/go-powerdns v0.6.6
+	github.com/libdns/libdns v1.1.1
+	github.com/mittwald/go-powerdns v0.6.7
 )
 
 require (
