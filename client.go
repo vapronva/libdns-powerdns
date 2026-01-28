@@ -63,7 +63,6 @@ func mergeRRecs(fullZone *zones.Zone, records []libdns.Record) ([]zones.Resource
 				Comments:   t.Comments,
 				Records:    slices.Clone(t.Records),
 			}
-			copy(rr.Records, t.Records)
 			// squash duplicate values
 			dupes := make(map[string]bool)
 			for _, prec := range t.Records {
@@ -104,11 +103,11 @@ func cullRRecs(fullZone *zones.Zone, records []libdns.Record) []zones.ResourceRe
 		}
 	}
 	return rRSets
-
 }
 
 // remove culls from rRSet record values
 func removeRecords(rRSet zones.ResourceRecordSet, culls []libdns.RR) zones.ResourceRecordSet {
+	rRSet.Records = slices.Clone(rRSet.Records)
 	deleteItem := func(item string) []zones.Record {
 		recs := rRSet.Records
 		for i := len(recs) - 1; i >= 0; i-- {
