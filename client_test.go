@@ -39,7 +39,9 @@ func TestPDNSClient(t *testing.T) {
 	}
 	defer func() {
 		if skipCleanup, _ := strconv.ParseBool(os.Getenv("PDNS_SKIP_CLEANUP")); !skipCleanup {
-			runCmd(dockerCompose, "down", "-v")
+			if errCMD := runCmd(dockerCompose, "down", "-v"); errCMD != nil {
+				t.Errorf("docker-compose cleanup failed: %s", errCMD)
+			}
 		}
 	}()
 

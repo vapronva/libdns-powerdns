@@ -53,6 +53,16 @@ func TestTXTSanitize(t *testing.T) {
 			input:    `only the "end is quoted"`,
 			expected: `"only the \"end is quoted\""`,
 		},
+		{
+			name:     "ends with trailing backslash",
+			input:    "ends with backslash \\",
+			expected: `"ends with backslash \\"`,
+		},
+		{
+			name:     "quoted input ends with trailing backslash",
+			input:    `"already quoted with slash \"`,
+			expected: `"already quoted with slash \\"`,
+		},
 	} {
 		t.Run(tst.name, func(t *testing.T) {
 			out := TXTSanitize(tst.input)

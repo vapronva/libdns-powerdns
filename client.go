@@ -6,6 +6,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/libdns/libdns"
 	"github.com/vapronva/libdns-powerdns/txtsanitize"
@@ -134,7 +135,7 @@ func convertLDHash(inHash map[string][]libdns.RR) []zones.ResourceRecordSet {
 		rr := zones.ResourceRecordSet{
 			Name:       recs[0].Name,
 			Type:       recs[0].Type,
-			TTL:        int(recs[0].TTL),
+			TTL:        int(recs[0].TTL / time.Second),
 			ChangeType: zones.ChangeTypeReplace,
 		}
 		for _, rec := range recs {

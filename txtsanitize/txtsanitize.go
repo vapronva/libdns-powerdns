@@ -53,13 +53,22 @@ func TXTSanitize(in string) string {
 	// which is likely what we want, instead of:
 	// "foo\" and other stuff \"bar"
 	out.WriteByte('"')
+	outContent := bldr.String()
 	if quoted && escaped > 0 && escaped%2 == 0 {
-		out.WriteString(`\"`)
-		out.WriteString(bldr.String())
-		out.WriteString(`\"`)
-	} else {
-		out.WriteString(bldr.String())
+		outContent = `\"` + outContent + `\"`
+	}
+	out.WriteString(outContent)
+	if trailingBackslashes(outContent)%2 == 1 {
+		out.WriteByte('\\')
 	}
 	out.WriteByte('"')
 	return out.String()
+}
+
+func trailingBackslashes(in string) int {
+	count := 0
+	for i := len(in) - 1; i >= 0 && in[i] == '\\'; i-- {
+		count++
+	}
+	return count
 }
