@@ -23,7 +23,6 @@ func TXTSanitize(in string) string {
 	}
 	escaped := 0
 	var bldr, out strings.Builder
-
 	for ind := 0; ind < len(contents); ind++ {
 		tInd := bytes.IndexByte(contents[ind:], '"')
 		if tInd == -1 {
@@ -32,7 +31,6 @@ func TXTSanitize(in string) string {
 		}
 		bldr.Write(contents[ind : ind+tInd])
 		ind += tInd
-
 		// look for \", but be aware of \\" is not escaped, but \\\" is
 		escCt := 0
 		for j := ind - 1; j >= 0 && contents[j] == '\\'; j-- {
@@ -45,7 +43,6 @@ func TXTSanitize(in string) string {
 		}
 		bldr.WriteByte('"')
 	}
-
 	// This tries to catch the situation where we have something like:
 	// "foo" and other stuff "bar"
 	// and make sure we get:

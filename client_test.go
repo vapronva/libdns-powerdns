@@ -16,35 +16,33 @@ import (
 )
 
 func TestPDNSClient(t *testing.T) {
-	var dockerCompose string
-	var ok bool
 	doRun, _ := strconv.ParseBool(os.Getenv("PDNS_RUN_INTEGRATION_TEST"))
 	if !doRun {
 		t.Skip("skipping because PDNS_RUN_INTEGRATION_TEST was not set")
 	}
-	if dockerCompose, ok = which("docker-compose"); !ok {
-		t.Skip("docker-compose is not present, skipping")
+	composeCmd, composePrefix, ok := composeRunner()
+	if !ok {
+		t.Skip("docker compose (plugin) or docker-compose is not present, skipping")
 	}
-	err := runCmd(dockerCompose, "rm", "-sfv")
+	err := runCompose(composeCmd, composePrefix, "rm", "-sfv")
 	if err != nil {
-		t.Fatalf("docker-compose failed: %s", err)
+		t.Fatalf("docker compose failed: %s", err)
 	}
-	err = runCmd(dockerCompose, "down", "-v")
+	err = runCompose(composeCmd, composePrefix, "down", "-v")
 	if err != nil {
-		t.Fatalf("docker-compose failed: %s", err)
+		t.Fatalf("docker compose failed: %s", err)
 	}
-	err = runCmd(dockerCompose, "up", "-d")
+	err = runCompose(composeCmd, composePrefix, "up", "-d")
 	if err != nil {
-		t.Fatalf("docker-compose failed: %s", err)
+		t.Fatalf("docker compose failed: %s", err)
 	}
 	defer func() {
 		if skipCleanup, _ := strconv.ParseBool(os.Getenv("PDNS_SKIP_CLEANUP")); !skipCleanup {
-			if errCMD := runCmd(dockerCompose, "down", "-v"); errCMD != nil {
-				t.Errorf("docker-compose cleanup failed: %s", errCMD)
+			if errCMD := runCompose(composeCmd, composePrefix, "down", "-v"); errCMD != nil {
+				t.Errorf("docker compose cleanup failed: %s", errCMD)
 			}
 		}
 	}()
-
 	time.Sleep(time.Second * 30) // give everything time to finish coming up
 	z := zones.Zone{
 		Name: "example.org.",
@@ -114,7 +112,6 @@ func TestPDNSClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create test zone: %s", err)
 	}
-
 	for _, table := range []struct {
 		name      string
 		operation string
@@ -138,13 +135,15 @@ func TestPDNSClient(t *testing.T) {
 			Type:      "A",
 			records: []libdns.Record{
 				libdns.RR{
-					Name:  "2",
-					Type:  "A",
+					Name: "2",
+					Type: "A",
 					Data: "127.0.0.7",
 				},
 			},
-			want: []string{"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3",
-				"2:127.0.0.4", "2:127.0.0.5", "2:127.0.0.6", "2:127.0.0.7"},
+			want: []string{
+				"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3",
+				"2:127.0.0.4", "2:127.0.0.5", "2:127.0.0.6", "2:127.0.0.7",
+			},
 		},
 		{
 			name:      "Test Append Zone TXT record",
@@ -153,8 +152,8 @@ func TestPDNSClient(t *testing.T) {
 			Type:      "TXT",
 			records: []libdns.Record{
 				libdns.RR{
-					Name:  "1",
-					Type:  "TXT",
+					Name: "1",
+					Type: "TXT",
 					Data: "\"This is also some text\"",
 				},
 			},
@@ -170,8 +169,8 @@ func TestPDNSClient(t *testing.T) {
 			Type:      "TXT",
 			records: []libdns.Record{
 				libdns.RR{
-					Name:  "1",
-					Type:  "TXT",
+					Name: "1",
+					Type: "TXT",
 					Data: "This is some weird text that isn't quoted",
 				},
 			},
@@ -188,14 +187,16 @@ func TestPDNSClient(t *testing.T) {
 			Type:      "TXT",
 			records: []libdns.Record{
 				libdns.RR{
-					Name:  "1",
-					Type:  "TXT",
+					Name: "1",
+					Type: "TXT",
 					Data: `This is some weird text that "has embedded quoting"`,
 				},
 			},
-			want: []string{`1:"This is text"`, `1:"This is also some text"`,
+			want: []string{
+				`1:"This is text"`, `1:"This is also some text"`,
 				`1:"This is some weird text that isn't quoted"`,
-				`1:"This is some weird text that \"has embedded quoting\""`},
+				`1:"This is some weird text that \"has embedded quoting\""`,
+			},
 		},
 		{
 			name:      "Test Append Zone TXT record with unicode",
@@ -204,16 +205,35 @@ func TestPDNSClient(t *testing.T) {
 			Type:      "TXT",
 			records: []libdns.Record{
 				libdns.RR{
-					Name:  "1",
-					Type:  "TXT",
+					Name: "1",
+					Type: "TXT",
 					Data: `ç is equal to \195\167`,
 				},
 			},
-			want: []string{`1:"This is text"`, `1:"This is also some text"`,
+			want: []string{
+				`1:"This is text"`, `1:"This is also some text"`,
 				`1:"This is some weird text that isn't quoted"`,
 				`1:"This is some weird text that \"has embedded quoting\""`,
 				`1:"ç is equal to \195\167"`,
 			},
+		},
+		{
+			name:      "Test Append Zone HTTPS record with ECH",
+			operation: "append",
+			zone:      "example.org.",
+			Type:      "HTTPS",
+			records: []libdns.Record{
+				libdns.ServiceBinding{
+					Name:     "svc",
+					Scheme:   "https",
+					Priority: 1,
+					Target:   ".",
+					Params: libdns.SvcParams{
+						"ech": {"Zm9vYmFy"},
+					},
+				},
+			},
+			want: []string{"svc:1 . ech=Zm9vYmFy"},
 		},
 		{
 			name:      "Test Delete Zone",
@@ -222,8 +242,8 @@ func TestPDNSClient(t *testing.T) {
 			Type:      "A",
 			records: []libdns.Record{
 				libdns.RR{
-					Name:  "2",
-					Type:  "A",
+					Name: "2",
+					Type: "A",
 					Data: "127.0.0.7",
 				},
 			},
@@ -236,19 +256,21 @@ func TestPDNSClient(t *testing.T) {
 			Type:      "A",
 			records: []libdns.Record{
 				libdns.RR{
-					Name:  "2",
-					Type:  "A",
+					Name: "2",
+					Type: "A",
 					Data: "127.0.0.8",
 				},
 				libdns.RR{
-					Name:  "3",
-					Type:  "A",
+					Name: "3",
+					Type: "A",
 					Data: "127.0.0.9",
 				},
 			},
-			want: []string{"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3",
+			want: []string{
+				"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3",
 				"2:127.0.0.4", "2:127.0.0.5", "2:127.0.0.6", "2:127.0.0.8",
-				"3:127.0.0.9"},
+				"3:127.0.0.9",
+			},
 		},
 		{
 			name:      "Test Set",
@@ -257,13 +279,13 @@ func TestPDNSClient(t *testing.T) {
 			Type:      "A",
 			records: []libdns.Record{
 				libdns.RR{
-					Name:  "2",
-					Type:  "A",
+					Name: "2",
+					Type: "A",
 					Data: "127.0.0.1",
 				},
 				libdns.RR{
-					Name:  "1",
-					Type:  "A",
+					Name: "1",
+					Type: "A",
 					Data: "127.0.0.1",
 				},
 			},
@@ -282,12 +304,10 @@ func TestPDNSClient(t *testing.T) {
 			case "delete":
 				_, err = p.DeleteRecords(context.Background(), table.zone, table.records)
 			}
-
 			if err != nil {
 				t.Errorf("failed to %s records: %s", table.operation, err)
 				return
 			}
-
 			// Fetch the zone
 			recs, err := p.GetRecords(context.Background(), table.zone)
 			if err != nil {
@@ -301,16 +321,13 @@ func TestPDNSClient(t *testing.T) {
 				}
 				have = append(have, fmt.Sprintf("%s:%s", rr.RR().Name, rr.RR().Data))
 			}
-
 			sort.Strings(have)
 			sort.Strings(table.want)
 			if !reflect.DeepEqual(have, table.want) {
 				t.Errorf("assertion failed: have: %#v want %#v", have, table.want)
 			}
-
 		})
 	}
-
 }
 
 func which(cmd string) (string, bool) {
@@ -326,4 +343,26 @@ func runCmd(cmd string, args ...string) error {
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	return c.Run()
+}
+
+func runCompose(cmd string, prefix []string, args ...string) error {
+	composeArgs := make([]string, 0, len(prefix)+len(args))
+	composeArgs = append(composeArgs, prefix...)
+	composeArgs = append(composeArgs, args...)
+	return runCmd(cmd, composeArgs...)
+}
+
+func composeRunner() (string, []string, bool) {
+	docker, ok := which("docker")
+	if ok {
+		check := exec.Command(docker, "compose", "version")
+		if err := check.Run(); err == nil {
+			return docker, []string{"compose"}, true
+		}
+	}
+	dockerCompose, ok := which("docker-compose")
+	if ok {
+		return dockerCompose, nil, true
+	}
+	return "", nil, false
 }

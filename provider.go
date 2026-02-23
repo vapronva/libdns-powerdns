@@ -16,22 +16,18 @@ import (
 type Provider struct {
 	// ServerURL is the location of the pdns server.
 	ServerURL string `json:"server_url"`
-
 	// ServerID is the id of the server.  localhost will be used
 	// if this is omitted.
-	ServerID  string `json:"server_id,omitempty"`
-
+	ServerID string `json:"server_id,omitempty"`
 	// APIToken is the auth token.
-	APIToken  string `json:"api_token,omitempty"`
-
+	APIToken string `json:"api_token,omitempty"`
 	// Debug - can set this to stdout or stderr to dump
 	// debugging information about the API interaction with
 	// powerdns.  This will dump your auth token in plain text
 	// so be careful.
-	Debug     string `json:"debug,omitempty"`
-
-	mu        sync.Mutex
-	c         *client
+	Debug string `json:"debug,omitempty"`
+	mu    sync.Mutex
+	c     *client
 }
 
 // GetRecords lists all the records in the zone.
@@ -47,12 +43,18 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 	recs := make([]libdns.Record, 0, len(prec.ResourceRecordSets))
 	for _, rec := range prec.ResourceRecordSets {
 		for _, v := range rec.Records {
-			recs = append(recs, libdns.RR{
-				Name:     libdns.RelativeName(rec.Name, zone),
-				TTL:      time.Second * time.Duration(rec.TTL),
-				Type:     rec.Type,
-				Data:     v.Content,
-			})
+			rr := libdns.RR{
+				Name: libdns.RelativeName(rec.Name, zone),
+				TTL:  time.Second * time.Duration(rec.TTL),
+				Type: rec.Type,
+				Data: v.Content,
+			}
+			lrec, err := rr.Parse()
+			if err != nil {
+				recs = append(recs, rr)
+				continue
+			}
+			recs = append(recs, lrec)
 		}
 	}
 	return recs, nil
@@ -109,15 +111,12 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []lib
 	if err != nil {
 		return nil, err
 	}
-
 	rRSets := cullRRecs(fullZone, convertNamesToAbsolute(zone, records))
 	err = c.updateRRs(ctx, fullZone.ID, rRSets)
 	if err != nil {
 		return nil, err
 	}
-
 	return records, nil
-
 }
 
 func (p *Provider) client() (*client, error) {

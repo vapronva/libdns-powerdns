@@ -75,6 +75,5 @@ func TestTXTSanitize(t *testing.T) {
 				t.Errorf("identity test failed: expected %s got %s", out, recycled)
 			}
 		})
-
 	}
 }

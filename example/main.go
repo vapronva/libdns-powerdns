@@ -5,7 +5,7 @@ import (
 
 	"github.com/libdns/libdns"
 
-	"github.com/vapronva/libdns-powerdns"
+	powerdns "github.com/vapronva/libdns-powerdns"
 )
 
 func main() {
@@ -14,16 +14,14 @@ func main() {
 		ServerID:  "localhost",        // if left empty, defaults to localhost.
 		APIToken:  "asdfasdfasdf",     // required
 	}
-
 	_, err := p.AppendRecords(context.Background(), "example.org.", []libdns.Record{
 		libdns.RR{
-			Name:  "_acme_whatever",
-			Type:  "TXT",
+			Name: "_acme_whatever",
+			Type: "TXT",
 			Data: "123456",
 		},
 	})
 	if err != nil {
 		panic(err)
 	}
-
 }
