@@ -1,0 +1,14 @@
+---
+stages:
+  - test
+
+include:
+  - component: $CI_SERVER_FQDN/ci/sast/sast@1
+  - component: $CI_SERVER_FQDN/ci/sast/iac@1
+  - component: $CI_SERVER_FQDN/ci/sast/datadog@1
+  - component: $CI_SERVER_FQDN/ci/sast/bearer@1
+  - component: $CI_SERVER_FQDN/ci/secret-detection/sd@1
+  - component: $CI_SERVER_FQDN/ci/dependency-scanning/ds@1
+  - component: $CI_SERVER_FQDN/ci/golang/init-vet@1
+  - component: $CI_SERVER_FQDN/ci/golang/lint@1
+  - component: $CI_SERVER_FQDN/ci/golang/test@1
