@@ -150,7 +150,7 @@ func convertLDHash(inHash map[string][]libdns.RR) []zones.ResourceRecordSet {
 }
 
 func key(Name, Type string) string {
-	return Name + ":" + Type
+	return strings.ToLower(Name) + ":" + strings.ToUpper(Type)
 }
 
 func makeLDRecHash(records []libdns.Record) map[string][]libdns.RR {
