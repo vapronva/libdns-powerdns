@@ -66,6 +66,26 @@ func TestConvertNamesToAbsoluteCanonicalizesSvcParamOrderAndQuoting(t *testing.T
 	}
 }
 
+func TestConvertNamesToAbsoluteEscapesSvcParamBackslash(t *testing.T) {
+	in := []libdns.Record{
+		libdns.ServiceBinding{
+			Name:     "svc",
+			TTL:      60 * time.Second,
+			Scheme:   "https",
+			Priority: 1,
+			Target:   ".",
+			Params: libdns.SvcParams{
+				"key999": {`test\value`},
+			},
+		},
+	}
+	out := convertNamesToAbsolute("example.org.", in)
+	rr := out[0].RR()
+	if !strings.Contains(rr.Data, `key999="test\\value"`) {
+		t.Fatalf("backslash not escaped in SVCB param: got %q", rr.Data)
+	}
+}
+
 func TestConvertNamesToAbsoluteCanonicalizesKnownGenericKeys(t *testing.T) {
 	in := []libdns.Record{
 		libdns.ServiceBinding{
@@ -90,5 +110,27 @@ func TestConvertNamesToAbsoluteCanonicalizesKnownGenericKeys(t *testing.T) {
 	want := `1 . no-default-alpn ech="Zm9vYmFy" dohpath="/dns-query{?dns}" ohttp`
 	if rr.Data != want {
 		t.Fatalf("unexpected data: got %q want %q", rr.Data, want)
+	}
+}
+
+func TestConvertNamesToAbsoluteSanitizesLowercaseTXTAndSPF(t *testing.T) {
+	tests := []struct {
+		name     string
+		recType  string
+		data     string
+		wantData string
+	}{
+		{"lowercase txt", "txt", "foo", `"foo"`},
+		{"SPF", "SPF", "v=spf1 -all", `"v=spf1 -all"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := []libdns.Record{libdns.RR{Name: "a", Type: tt.recType, Data: tt.data}}
+			out := convertNamesToAbsolute("example.org.", in)
+			rr := out[0].RR()
+			if rr.Data != tt.wantData {
+				t.Errorf("got %q, want %q", rr.Data, tt.wantData)
+			}
+		})
 	}
 }

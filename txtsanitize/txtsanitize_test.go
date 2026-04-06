@@ -77,3 +77,17 @@ func TestTXTSanitize(t *testing.T) {
 		})
 	}
 }
+
+func TestTXTSanitizeIdempotencyWithSmartWrapAndTrailingBackslash(t *testing.T) {
+	inputs := []string{
+		"\"a\" \"b\\\"",
+		"\"\" \" \" \"\\\"",
+	}
+	for _, in := range inputs {
+		first := TXTSanitize(in)
+		second := TXTSanitize(first)
+		if first != second {
+			t.Errorf("not idempotent for input %q:\n  first:  %q\n  second: %q", in, first, second)
+		}
+	}
+}

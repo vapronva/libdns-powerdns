@@ -177,6 +177,9 @@ func (c *client) fullZone(ctx context.Context, zoneName string) (*zones.Zone, er
 }
 
 func (c *client) shortZone(ctx context.Context, zoneName string) (*zones.Zone, error) {
+	if !strings.HasSuffix(zoneName, ".") {
+		zoneName += "."
+	}
 	zc := c.Zones()
 	shortZones, err := zc.ListZone(ctx, c.sID, zoneName)
 	if err != nil {
@@ -211,7 +214,8 @@ func convertNamesToAbsolute(zone string, records []libdns.Record) []libdns.Recor
 			abs += "."
 		}
 		data := r.Data
-		if r.Type == "TXT" {
+		uType := strings.ToUpper(r.Type)
+		if uType == "TXT" || uType == "SPF" {
 			data = txtsanitize.TXTSanitize(data)
 		}
 		out = append(out, libdns.RR{
@@ -389,6 +393,7 @@ func paramsToString(params libdns.SvcParams) string {
 			if i > 0 {
 				sb.WriteRune(',')
 			}
+			val = strings.ReplaceAll(val, `\`, `\\`)
 			val = strings.ReplaceAll(val, `"`, `\"`)
 			val = strings.ReplaceAll(val, `,`, `\,`)
 			sb.WriteString(val)

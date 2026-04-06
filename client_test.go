@@ -129,6 +129,14 @@ func TestPDNSClient(t *testing.T) {
 			want:      []string{"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3", "2:127.0.0.4", "2:127.0.0.5", "2:127.0.0.6"},
 		},
 		{
+			name:      "Test Get Zone without trailing dot",
+			operation: "records",
+			zone:      "example.org",
+			records:   nil,
+			Type:      "A",
+			want:      []string{"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3", "2:127.0.0.4", "2:127.0.0.5", "2:127.0.0.6"},
+		},
+		{
 			name:      "Test Append Zone A record",
 			operation: "append",
 			zone:      "example.org.",

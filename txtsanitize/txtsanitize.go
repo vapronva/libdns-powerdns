@@ -51,13 +51,13 @@ func TXTSanitize(in string) string {
 	// "foo\" and other stuff \"bar"
 	out.WriteByte('"')
 	outContent := bldr.String()
+	if trailingBackslashes(outContent)%2 == 1 {
+		outContent += `\`
+	}
 	if quoted && escaped > 0 && escaped%2 == 0 {
 		outContent = `\"` + outContent + `\"`
 	}
 	out.WriteString(outContent)
-	if trailingBackslashes(outContent)%2 == 1 {
-		out.WriteByte('\\')
-	}
 	out.WriteByte('"')
 	return out.String()
 }
