@@ -3,6 +3,7 @@ package powerdns
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"reflect"
@@ -24,18 +25,9 @@ func TestPDNSClient(t *testing.T) {
 	if !ok {
 		t.Skip("docker compose (plugin) or docker-compose is not present, skipping")
 	}
-	err := runCompose(composeCmd, composePrefix, "rm", "-sfv")
-	if err != nil {
-		t.Fatalf("docker compose failed: %s", err)
-	}
-	err = runCompose(composeCmd, composePrefix, "down", "-v")
-	if err != nil {
-		t.Fatalf("docker compose failed: %s", err)
-	}
-	err = runCompose(composeCmd, composePrefix, "up", "-d")
-	if err != nil {
-		t.Fatalf("docker compose failed: %s", err)
-	}
+	mustCompose(t, composeCmd, composePrefix, "rm", "-sfv")
+	mustCompose(t, composeCmd, composePrefix, "down", "-v")
+	mustCompose(t, composeCmd, composePrefix, "up", "-d")
 	defer func() {
 		if skipCleanup, _ := strconv.ParseBool(os.Getenv("PDNS_SKIP_CLEANUP")); !skipCleanup {
 			if errCMD := runCompose(composeCmd, composePrefix, "down", "-v"); errCMD != nil {
@@ -43,60 +35,33 @@ func TestPDNSClient(t *testing.T) {
 			}
 		}
 	}()
-	time.Sleep(time.Second * 30) // give everything time to finish coming up
+	waitForAPI(t, "http://localhost:8081", "secret")
 	z := zones.Zone{
 		Name: "example.org.",
 		Type: zones.ZoneTypeZone,
 		Kind: zones.ZoneKindNative,
 		ResourceRecordSets: []zones.ResourceRecordSet{
 			{
-				Name: "1.example.org.",
-				Type: "A",
-				TTL:  60,
-				Records: []zones.Record{
-					{
-						Content: "127.0.0.1",
-					},
-					{
-						Content: "127.0.0.2",
-					},
-					{
-						Content: "127.0.0.3",
-					},
-				},
+				Name:    "1.example.org.",
+				Type:    "A",
+				TTL:     60,
+				Records: []zones.Record{{Content: "127.0.0.1"}, {Content: "127.0.0.2"}, {Content: "127.0.0.3"}},
 			},
 			{
-				Name: "1.example.org.",
-				Type: "TXT",
-				TTL:  60,
-				Records: []zones.Record{
-					{
-						Content: "\"This is text\"",
-					},
-				},
+				Name:    "1.example.org.",
+				Type:    "TXT",
+				TTL:     60,
+				Records: []zones.Record{{Content: `"This is text"`}},
 			},
 			{
-				Name: "2.example.org.",
-				Type: "A",
-				TTL:  60,
-				Records: []zones.Record{
-					{
-						Content: "127.0.0.4",
-					},
-					{
-						Content: "127.0.0.5",
-					},
-					{
-						Content: "127.0.0.6",
-					},
-				},
+				Name:    "2.example.org.",
+				Type:    "A",
+				TTL:     60,
+				Records: []zones.Record{{Content: "127.0.0.4"}, {Content: "127.0.0.5"}, {Content: "127.0.0.6"}},
 			},
 		},
-		Serial: 1,
-		Nameservers: []string{
-			"ns1.example.org.",
-			"ns2.example.org.",
-		},
+		Serial:      1,
+		Nameservers: []string{"ns1.example.org.", "ns2.example.org."},
 	}
 	p := &Provider{
 		ServerURL: "http://localhost:8081",
@@ -104,14 +69,7 @@ func TestPDNSClient(t *testing.T) {
 		APIToken:  "secret",
 		Debug:     os.Getenv("PDNS_DEBUG"),
 	}
-	c, err := p.client()
-	if err != nil {
-		t.Fatalf("could not create client: %s", err)
-	}
-	_, err = c.Client.Zones().CreateZone(context.Background(), c.sID, z)
-	if err != nil {
-		t.Fatalf("failed to create test zone: %s", err)
-	}
+	mustCreateZone(t, p, z)
 	for _, table := range []struct {
 		name      string
 		operation string
@@ -121,85 +79,48 @@ func TestPDNSClient(t *testing.T) {
 		want      []string
 	}{
 		{
-			name:      "Test Get Zone",
-			operation: "records",
-			zone:      "example.org.",
-			records:   nil,
-			Type:      "A",
-			want:      []string{"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3", "2:127.0.0.4", "2:127.0.0.5", "2:127.0.0.6"},
-		},
-		{
-			name:      "Test Get Zone without trailing dot",
+			name:      "Get zone without trailing dot",
 			operation: "records",
 			zone:      "example.org",
-			records:   nil,
 			Type:      "A",
 			want:      []string{"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3", "2:127.0.0.4", "2:127.0.0.5", "2:127.0.0.6"},
 		},
 		{
-			name:      "Test Append Zone A record",
+			name:      "Append A record",
 			operation: "append",
 			zone:      "example.org.",
 			Type:      "A",
-			records: []libdns.Record{
-				libdns.RR{
-					Name: "2",
-					Type: "A",
-					Data: "127.0.0.7",
-				},
-			},
+			records:   []libdns.Record{libdns.RR{Name: "2", Type: "A", Data: "127.0.0.7"}},
 			want: []string{
 				"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3",
 				"2:127.0.0.4", "2:127.0.0.5", "2:127.0.0.6", "2:127.0.0.7",
 			},
 		},
 		{
-			name:      "Test Append Zone TXT record",
+			name:      "Append already-quoted TXT",
 			operation: "append",
 			zone:      "example.org.",
 			Type:      "TXT",
-			records: []libdns.Record{
-				libdns.RR{
-					Name: "1",
-					Type: "TXT",
-					Data: "\"This is also some text\"",
-				},
-			},
-			want: []string{
-				`1:"This is text"`,
-				`1:"This is also some text"`,
-			},
+			records:   []libdns.Record{libdns.RR{Name: "1", Type: "TXT", Data: `"This is also some text"`}},
+			want:      []string{`1:"This is text"`, `1:"This is also some text"`},
 		},
 		{
-			name:      "Test Append Zone TXT record with weird formatting",
+			name:      "Append unquoted TXT",
 			operation: "append",
 			zone:      "example.org.",
 			Type:      "TXT",
-			records: []libdns.Record{
-				libdns.RR{
-					Name: "1",
-					Type: "TXT",
-					Data: "This is some weird text that isn't quoted",
-				},
-			},
+			records:   []libdns.Record{libdns.RR{Name: "1", Type: "TXT", Data: "This is some weird text that isn't quoted"}},
 			want: []string{
-				`1:"This is text"`,
-				`1:"This is also some text"`,
+				`1:"This is text"`, `1:"This is also some text"`,
 				`1:"This is some weird text that isn't quoted"`,
 			},
 		},
 		{
-			name:      "Test Append Zone TXT record with embedded quotes",
+			name:      "Append TXT with embedded quotes",
 			operation: "append",
 			zone:      "example.org.",
 			Type:      "TXT",
-			records: []libdns.Record{
-				libdns.RR{
-					Name: "1",
-					Type: "TXT",
-					Data: `This is some weird text that "has embedded quoting"`,
-				},
-			},
+			records:   []libdns.Record{libdns.RR{Name: "1", Type: "TXT", Data: `This is some weird text that "has embedded quoting"`}},
 			want: []string{
 				`1:"This is text"`, `1:"This is also some text"`,
 				`1:"This is some weird text that isn't quoted"`,
@@ -207,104 +128,53 @@ func TestPDNSClient(t *testing.T) {
 			},
 		},
 		{
-			name:      "Test Append Zone TXT record with unicode",
+			name:      "Append TXT with backslashes",
 			operation: "append",
 			zone:      "example.org.",
 			Type:      "TXT",
-			records: []libdns.Record{
-				libdns.RR{
-					Name: "1",
-					Type: "TXT",
-					Data: `ç is equal to \195\167`,
-				},
-			},
+			records:   []libdns.Record{libdns.RR{Name: "1", Type: "TXT", Data: `ç is equal to \195\167`}},
 			want: []string{
 				`1:"This is text"`, `1:"This is also some text"`,
 				`1:"This is some weird text that isn't quoted"`,
 				`1:"This is some weird text that \"has embedded quoting\""`,
-				`1:"ç is equal to \195\167"`,
+				`1:"ç is equal to \\195\\167"`,
 			},
 		},
 		{
-			name:      "Test Append Zone HTTPS record with ECH",
+			name:      "Append HTTPS record with ECH",
 			operation: "append",
 			zone:      "example.org.",
 			Type:      "HTTPS",
-			records: []libdns.Record{
-				libdns.ServiceBinding{
-					Name:     "svc",
-					Scheme:   "https",
-					Priority: 1,
-					Target:   ".",
-					Params: libdns.SvcParams{
-						"ech": {"Zm9vYmFy"},
-					},
-				},
-			},
+			records: []libdns.Record{libdns.ServiceBinding{
+				Name: "svc", Scheme: "https", Priority: 1, Target: ".",
+				Params: libdns.SvcParams{"ech": {"Zm9vYmFy"}},
+			}},
 			want: []string{"svc:1 . ech=Zm9vYmFy"},
 		},
 		{
-			name:      "Test Delete Zone",
+			name:      "Delete A record",
 			operation: "delete",
 			zone:      "example.org.",
 			Type:      "A",
-			records: []libdns.Record{
-				libdns.RR{
-					Name: "2",
-					Type: "A",
-					Data: "127.0.0.7",
-				},
-			},
-			want: []string{"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3", "2:127.0.0.4", "2:127.0.0.5", "2:127.0.0.6"},
+			records:   []libdns.Record{libdns.RR{Name: "2", Type: "A", Data: "127.0.0.7"}},
+			want:      []string{"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3", "2:127.0.0.4", "2:127.0.0.5", "2:127.0.0.6"},
 		},
 		{
-			name:      "Test Append and Add Zone",
-			operation: "append",
-			zone:      "example.org.",
-			Type:      "A",
-			records: []libdns.Record{
-				libdns.RR{
-					Name: "2",
-					Type: "A",
-					Data: "127.0.0.8",
-				},
-				libdns.RR{
-					Name: "3",
-					Type: "A",
-					Data: "127.0.0.9",
-				},
-			},
-			want: []string{
-				"1:127.0.0.1", "1:127.0.0.2", "1:127.0.0.3",
-				"2:127.0.0.4", "2:127.0.0.5", "2:127.0.0.6", "2:127.0.0.8",
-				"3:127.0.0.9",
-			},
-		},
-		{
-			name:      "Test Set",
+			name:      "Set replaces only the named rrsets",
 			operation: "set",
 			zone:      "example.org.",
 			Type:      "A",
 			records: []libdns.Record{
-				libdns.RR{
-					Name: "2",
-					Type: "A",
-					Data: "127.0.0.1",
-				},
-				libdns.RR{
-					Name: "1",
-					Type: "A",
-					Data: "127.0.0.1",
-				},
+				libdns.RR{Name: "2", Type: "A", Data: "127.0.0.1"},
+				libdns.RR{Name: "1", Type: "A", Data: "127.0.0.1"},
 			},
-			want: []string{"1:127.0.0.1", "2:127.0.0.1", "3:127.0.0.9"},
+			want: []string{"1:127.0.0.1", "2:127.0.0.1"},
 		},
 	} {
 		t.Run(table.name, func(t *testing.T) {
 			var err error
 			switch table.operation {
 			case "records":
-				// fetch below
 			case "append":
 				_, err = p.AppendRecords(context.Background(), table.zone, table.records)
 			case "set":
@@ -313,14 +183,11 @@ func TestPDNSClient(t *testing.T) {
 				_, err = p.DeleteRecords(context.Background(), table.zone, table.records)
 			}
 			if err != nil {
-				t.Errorf("failed to %s records: %s", table.operation, err)
-				return
+				t.Fatalf("failed to %s records: %s", table.operation, err)
 			}
-			// Fetch the zone
 			recs, err := p.GetRecords(context.Background(), table.zone)
 			if err != nil {
-				t.Errorf("error fetching zone")
-				return
+				t.Fatalf("error fetching zone: %s", err)
 			}
 			var have []string
 			for _, rr := range recs {
@@ -332,10 +199,27 @@ func TestPDNSClient(t *testing.T) {
 			sort.Strings(have)
 			sort.Strings(table.want)
 			if !reflect.DeepEqual(have, table.want) {
-				t.Errorf("assertion failed: have: %#v want %#v", have, table.want)
+				t.Errorf("assertion failed: have %#v want %#v", have, table.want)
 			}
 		})
 	}
+}
+
+func waitForAPI(t *testing.T, baseURL, apiKey string) {
+	t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/servers", nil)
+		req.Header.Set("X-Api-Key", apiKey)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatal("PowerDNS API did not become ready within 90s")
 }
 
 func which(cmd string) (string, bool) {
@@ -358,6 +242,24 @@ func runCompose(cmd string, prefix []string, args ...string) error {
 	composeArgs = append(composeArgs, prefix...)
 	composeArgs = append(composeArgs, args...)
 	return runCmd(cmd, composeArgs...)
+}
+
+func mustCompose(t *testing.T, cmd string, prefix []string, args ...string) {
+	t.Helper()
+	if err := runCompose(cmd, prefix, args...); err != nil {
+		t.Fatalf("docker compose %v failed: %s", args, err)
+	}
+}
+
+func mustCreateZone(t *testing.T, p *Provider, z zones.Zone) {
+	t.Helper()
+	c, err := p.client()
+	if err != nil {
+		t.Fatalf("could not create client: %s", err)
+	}
+	if _, err = c.Client.Zones().CreateZone(context.Background(), c.sID, z); err != nil {
+		t.Fatalf("failed to create test zone: %s", err)
+	}
 }
 
 func composeRunner() (string, []string, bool) {

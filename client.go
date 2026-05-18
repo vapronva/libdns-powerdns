@@ -1,11 +1,11 @@
 package powerdns
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,114 +18,174 @@ import (
 )
 
 type client struct {
-	sID string
 	pdns.Client
+
+	sID string
 }
 
-func newClient(ServerID, ServerURL, APIToken string, debug io.Writer) (*client, error) {
+func newClient(serverID, serverURL, apiToken string, debug io.Writer) (*client, error) {
 	if debug == nil {
 		debug = io.Discard
 	}
 	c, err := pdns.New(
-		pdns.WithBaseURL(ServerURL),
-		pdns.WithAPIKeyAuthentication(APIToken),
+		pdns.WithBaseURL(serverURL),
+		pdns.WithAPIKeyAuthentication(apiToken),
 		pdns.WithDebuggingOutput(debug),
 	)
 	if err != nil {
 		return nil, err
 	}
 	return &client{
-		sID:    ServerID,
+		sID:    serverID,
 		Client: c,
 	}, nil
 }
 
 func (c *client) updateRRs(ctx context.Context, zoneID string, recs []zones.ResourceRecordSet) error {
-	err := c.Zones().AddRecordSetsToZone(ctx, c.sID, zoneID, recs)
-	if err != nil {
-		return err
+	if len(recs) == 0 {
+		return nil
 	}
-	return nil
+	return c.Zones().AddRecordSetsToZone(ctx, c.sID, zoneID, recs)
 }
 
-func mergeRRecs(fullZone *zones.Zone, records []libdns.Record) ([]zones.ResourceRecordSet, error) {
-	// pdns doesn't really have an append functionality, so we have to fake it by
-	// fetching existing rrsets for the zone and see if any already exist.  If so,
-	// merge those with the existing data.  Otherwise just add the record.
+func newRRSet(name, typ string, ttl int, comments []zones.Comment, recs []zones.Record) zones.ResourceRecordSet {
+	return zones.ResourceRecordSet{
+		Name:     name,
+		Type:     typ,
+		TTL:      ttl,
+		Comments: comments,
+		Records:  recs,
+	}
+}
+
+func mergeRRecs(fullZone *zones.Zone, records []libdns.Record) []zones.ResourceRecordSet {
 	inHash := makeLDRecHash(records)
 	var rrsets []zones.ResourceRecordSet
-	// Merge existing resource record sets with any that were passed in to modify.
 	for _, t := range fullZone.ResourceRecordSets {
 		k := key(t.Name, t.Type)
-		if recs, ok := inHash[k]; ok && len(recs) > 0 {
-			rr := zones.ResourceRecordSet{
-				Name:       t.Name,
-				Type:       t.Type,
-				TTL:        t.TTL,
-				ChangeType: zones.ChangeTypeReplace,
-				Comments:   t.Comments,
-				Records:    slices.Clone(t.Records),
-			}
-			// squash duplicate values
-			dupes := make(map[string]bool)
-			for _, prec := range t.Records {
-				dupes[prec.Content] = true
-			}
-			// now for our additions
-			for _, rec := range recs {
-				if !dupes[rec.Data] {
-					rr.Records = append(rr.Records, zones.Record{
-						Content: rec.Data,
-					})
-					dupes[rec.Data] = true
-				}
-			}
-			rrsets = append(rrsets, rr)
-			delete(inHash, k)
+		recs, ok := inHash[k]
+		if !ok || len(recs) == 0 {
+			continue
 		}
+		merged := slices.Clone(t.Records)
+		seen := make(map[string]bool, len(merged)+len(recs))
+		for _, prec := range t.Records {
+			seen[prec.Content] = true
+		}
+		for _, rec := range recs {
+			if !seen[rec.Data] {
+				merged = append(merged, zones.Record{Content: rec.Data})
+				seen[rec.Data] = true
+			}
+		}
+		rrsets = append(rrsets, newRRSet(t.Name, t.Type, t.TTL, t.Comments, merged))
+		delete(inHash, k)
 	}
-	// Any remaining in our input hash need to be straight adds / creates.
 	rrsets = append(rrsets, convertLDHash(inHash)...)
-	return rrsets, nil
+	return rrsets
 }
 
-// generate RessourceRecordSets that will delete records from zone
-func cullRRecs(fullZone *zones.Zone, records []libdns.Record) []zones.ResourceRecordSet {
-	inHash := makeLDRecHash(records)
+func indexByName(fullZone *zones.Zone) map[string][]int {
+	idx := make(map[string][]int, len(fullZone.ResourceRecordSets))
+	for i := range fullZone.ResourceRecordSets {
+		n := strings.ToLower(fullZone.ResourceRecordSets[i].Name)
+		idx[n] = append(idx[n], i)
+	}
+	return idx
+}
+
+type cull struct {
+	all  bool
+	vals map[string]struct{}
+}
+
+func cullPlans(fullZone *zones.Zone, converted, original []libdns.Record) map[int]*cull {
+	plans := make(map[int]*cull)
+	plan := func(idx int) *cull {
+		if plans[idx] == nil {
+			plans[idx] = &cull{vals: map[string]struct{}{}}
+		}
+		return plans[idx]
+	}
+	byName := indexByName(fullZone)
+	for i := range min(len(converted), len(original)) {
+		conv := converted[i].RR()
+		orig := original[i].RR()
+		wantTTL := int(conv.TTL / time.Second)
+		for _, idx := range byName[strings.ToLower(conv.Name)] {
+			t := &fullZone.ResourceRecordSets[idx]
+			switch {
+			case orig.Type != "" && !strings.EqualFold(t.Type, conv.Type):
+			case wantTTL != 0 && wantTTL != t.TTL:
+			case orig.Data == "":
+				plan(idx).all = true
+			case slices.ContainsFunc(t.Records, func(r zones.Record) bool { return r.Content == conv.Data }):
+				plan(idx).vals[conv.Data] = struct{}{}
+			}
+		}
+	}
+	return plans
+}
+
+func cullRRecs(
+	zone string,
+	fullZone *zones.Zone,
+	converted, original []libdns.Record,
+) ([]zones.ResourceRecordSet, []libdns.Record) {
 	var rRSets []zones.ResourceRecordSet
-	for _, t := range fullZone.ResourceRecordSets {
-		k := key(t.Name, t.Type)
-		if recs, ok := inHash[k]; ok && len(recs) > 0 {
-			rRec := removeRecords(t, recs)
-			if len(rRec.Records) == 0 {
-				rRec.ChangeType = zones.ChangeTypeDelete
-			} else {
-				rRec.ChangeType = zones.ChangeTypeReplace
+	var deleted []libdns.Record
+	for idx, p := range cullPlans(fullZone, converted, original) {
+		t := &fullZone.ResourceRecordSets[idx]
+		kept := make([]zones.Record, 0, len(t.Records))
+		for _, rec := range t.Records {
+			if _, drop := p.vals[rec.Content]; !p.all && !drop {
+				kept = append(kept, rec)
+				continue
 			}
-			rRSets = append(rRSets, rRec)
+			deleted = append(deleted, parseZoneRecord(zone, t.Name, t.Type, t.TTL, rec.Content))
+		}
+		if len(kept) != len(t.Records) {
+			rRSets = append(rRSets, newRRSet(t.Name, t.Type, t.TTL, t.Comments, kept))
 		}
 	}
-	return rRSets
+	return rRSets, deleted
 }
 
-// remove culls from rRSet record values
-func removeRecords(rRSet zones.ResourceRecordSet, culls []libdns.RR) zones.ResourceRecordSet {
-	rRSet.Records = slices.Clone(rRSet.Records)
-	deleteItem := func(item string) []zones.Record {
-		recs := rRSet.Records
-		for i := len(recs) - 1; i >= 0; i-- {
-			if recs[i].Content == item {
-				copy(recs[i:], recs[i+1:])
-				recs = recs[:len(recs)-1]
-			}
-		}
-		return recs
-	}
-	for _, c := range culls {
-		rRSet.Records = deleteItem(c.Data)
-	}
-	return rRSet
+func parseZoneRecord(zone, name, typ string, ttl int, content string) libdns.Record {
+	return parseRR(libdns.RR{
+		Name: libdns.RelativeName(name, zone),
+		TTL:  time.Duration(ttl) * time.Second,
+		Type: typ,
+		Data: content,
+	})
 }
+
+func parseRR(rr libdns.RR) libdns.Record {
+	if parsed, err := rr.Parse(); err == nil {
+		return parsed
+	}
+	return rr
+}
+
+func parseInputRecords(records []libdns.Record) []libdns.Record {
+	out := make([]libdns.Record, 0, len(records))
+	for _, rec := range records {
+		out = append(out, parseRR(rec.RR()))
+	}
+	return out
+}
+
+func recordsFromRRSets(zone string, sets []zones.ResourceRecordSet) []libdns.Record {
+	var out []libdns.Record
+	for _, s := range sets {
+		for _, r := range s.Records {
+			out = append(out, parseZoneRecord(zone, s.Name, s.Type, s.TTL, r.Content))
+		}
+	}
+	return out
+}
+
+const defaultTTL = 3600
 
 func convertLDHash(inHash map[string][]libdns.RR) []zones.ResourceRecordSet {
 	var rrsets []zones.ResourceRecordSet
@@ -133,60 +193,60 @@ func convertLDHash(inHash map[string][]libdns.RR) []zones.ResourceRecordSet {
 		if len(recs) == 0 {
 			continue
 		}
-		rr := zones.ResourceRecordSet{
-			Name:       recs[0].Name,
-			Type:       recs[0].Type,
-			TTL:        int(recs[0].TTL / time.Second),
-			ChangeType: zones.ChangeTypeReplace,
+		ttl := int(recs[0].TTL / time.Second)
+		if ttl <= 0 {
+			ttl = defaultTTL
 		}
+		out := make([]zones.Record, 0, len(recs))
+		seen := make(map[string]struct{}, len(recs))
 		for _, rec := range recs {
-			rr.Records = append(rr.Records, zones.Record{
-				Content: rec.Data,
-			})
+			if _, dup := seen[rec.Data]; dup {
+				continue
+			}
+			seen[rec.Data] = struct{}{}
+			out = append(out, zones.Record{Content: rec.Data})
 		}
-		rrsets = append(rrsets, rr)
+		rrsets = append(rrsets, newRRSet(recs[0].Name, recs[0].Type, ttl, nil, out))
 	}
 	return rrsets
 }
 
-func key(Name, Type string) string {
-	return strings.ToLower(Name) + ":" + strings.ToUpper(Type)
+func key(name, typ string) string {
+	return strings.ToLower(name) + ":" + strings.ToUpper(typ)
 }
 
 func makeLDRecHash(records []libdns.Record) map[string][]libdns.RR {
-	// Keep track of records grouped by name + type
 	inHash := make(map[string][]libdns.RR)
 	for _, r := range records {
-		k := key(r.RR().Name, r.RR().Type)
-		inHash[k] = append(inHash[k], r.RR())
+		rr := r.RR()
+		k := key(rr.Name, rr.Type)
+		inHash[k] = append(inHash[k], rr)
 	}
 	return inHash
 }
 
+func canonicalZone(zone string) string {
+	if !strings.HasSuffix(zone, ".") {
+		return zone + "."
+	}
+	return zone
+}
+
 func (c *client) fullZone(ctx context.Context, zoneName string) (*zones.Zone, error) {
-	zc := c.Zones()
 	shortZone, err := c.shortZone(ctx, zoneName)
 	if err != nil {
 		return nil, err
 	}
-	fullZone, err := zc.GetZone(ctx, c.sID, shortZone.ID)
-	if err != nil {
-		return nil, err
-	}
-	return fullZone, nil
+	return c.Zones().GetZone(ctx, c.sID, shortZone.ID)
 }
 
 func (c *client) shortZone(ctx context.Context, zoneName string) (*zones.Zone, error) {
-	if !strings.HasSuffix(zoneName, ".") {
-		zoneName += "."
-	}
-	zc := c.Zones()
-	shortZones, err := zc.ListZone(ctx, c.sID, zoneName)
+	shortZones, err := c.Zones().ListZone(ctx, c.sID, canonicalZone(zoneName))
 	if err != nil {
 		return nil, err
 	}
 	if len(shortZones) != 1 {
-		return nil, fmt.Errorf("zone not found")
+		return nil, fmt.Errorf("zone %q: expected exactly one match, got %d", zoneName, len(shortZones))
 	}
 	return &shortZones[0], nil
 }
@@ -200,6 +260,7 @@ func (c *client) zoneID(ctx context.Context, zoneName string) (string, error) {
 }
 
 func convertNamesToAbsolute(zone string, records []libdns.Record) []libdns.Record {
+	zone = canonicalZone(zone)
 	out := make([]libdns.Record, 0, len(records))
 	for _, rec := range records {
 		r := rec.RR()
@@ -209,17 +270,13 @@ func convertNamesToAbsolute(zone string, records []libdns.Record) []libdns.Recor
 		case *libdns.ServiceBinding:
 			r = svcbToRR(*svcb)
 		}
-		abs := libdns.AbsoluteName(r.Name, zone)
-		if !strings.HasSuffix(abs, ".") {
-			abs += "."
-		}
 		data := r.Data
 		uType := strings.ToUpper(r.Type)
 		if uType == "TXT" || uType == "SPF" {
 			data = txtsanitize.TXTSanitize(data)
 		}
 		out = append(out, libdns.RR{
-			Name: abs,
+			Name: libdns.AbsoluteName(r.Name, zone),
 			TTL:  r.TTL,
 			Type: r.Type,
 			Data: data,
@@ -241,18 +298,13 @@ var svcParamNameToCode = map[string]int{
 	"tls-supported-groups": 9,
 }
 
-var svcParamCodeToName = map[int]string{
-	0: "mandatory",
-	1: "alpn",
-	2: "no-default-alpn",
-	3: "port",
-	4: "ipv4hint",
-	5: "ech",
-	6: "ipv6hint",
-	7: "dohpath",
-	8: "ohttp",
-	9: "tls-supported-groups",
-}
+var svcParamCodeToName = func() map[int]string {
+	m := make(map[int]string, len(svcParamNameToCode))
+	for name, code := range svcParamNameToCode {
+		m[code] = name
+	}
+	return m
+}()
 
 func svcbToRR(s libdns.ServiceBinding) libdns.RR {
 	rr := s.RR()
@@ -283,10 +335,12 @@ func parseGenericSvcParamCode(key string) (int, bool) {
 }
 
 func canonicalSvcParamKey(key string) string {
-	if code, ok := parseGenericSvcParamCode(key); ok {
-		if canonical, ok := svcParamCodeToName[code]; ok {
-			return canonical
-		}
+	code, ok := parseGenericSvcParamCode(key)
+	if !ok {
+		return key
+	}
+	if canonical, found := svcParamCodeToName[code]; found {
+		return canonical
 	}
 	return key
 }
@@ -298,16 +352,19 @@ func svcParamCode(key string) (int, bool) {
 	return parseGenericSvcParamCode(key)
 }
 
-func lessSvcParamKey(left, right string) bool {
+func compareSvcParamKey(left, right string) int {
 	leftCode, leftKnown := svcParamCode(left)
 	rightCode, rightKnown := svcParamCode(right)
 	switch {
-	case leftKnown && rightKnown && leftCode != rightCode:
-		return leftCode < rightCode
+	case leftKnown && rightKnown:
+		return cmp.Compare(leftCode, rightCode)
 	case leftKnown != rightKnown:
-		return leftKnown
+		if leftKnown {
+			return -1
+		}
+		return 1
 	default:
-		return left < right
+		return cmp.Compare(left, right)
 	}
 }
 
@@ -325,9 +382,7 @@ func canonicalMandatoryValues(vals []string) []string {
 		seen[key] = struct{}{}
 		uniq = append(uniq, key)
 	}
-	sort.Slice(uniq, func(i, j int) bool {
-		return lessSvcParamKey(uniq[i], uniq[j])
-	})
+	slices.SortFunc(uniq, compareSvcParamKey)
 	return uniq
 }
 
@@ -345,62 +400,70 @@ func paramsToString(params libdns.SvcParams) string {
 	canonicalParams := make(libdns.SvcParams, len(params))
 	for key, vals := range params {
 		key = canonicalSvcParamKey(strings.ToLower(key))
-		canonicalParams[key] = append(canonicalParams[key], slices.Clone(vals)...)
+		canonicalParams[key] = append(canonicalParams[key], vals...)
 	}
 	keys := make([]string, 0, len(canonicalParams))
 	for key := range canonicalParams {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return lessSvcParamKey(keys[i], keys[j])
-	})
+	slices.SortFunc(keys, compareSvcParamKey)
 	var sb strings.Builder
 	for _, key := range keys {
-		vals := canonicalParams[key]
-		if key == "mandatory" {
-			vals = canonicalMandatoryValues(vals)
-		}
-		var hasVal bool
-		for _, val := range vals {
-			if len(val) > 0 {
-				hasVal = true
-				break
-			}
-		}
-		if !hasVal {
-			vals = nil
-		}
-		if sb.Len() > 0 {
-			sb.WriteRune(' ')
-		}
-		sb.WriteString(key)
-		needsQuotes := svcParamAlwaysQuotes(key)
-		if !needsQuotes {
-			for _, val := range vals {
-				if strings.ContainsAny(val, `" `) {
-					needsQuotes = true
-					break
-				}
-			}
-		}
-		if hasVal {
-			sb.WriteRune('=')
-		}
-		if hasVal && needsQuotes {
-			sb.WriteRune('"')
-		}
-		for i, val := range vals {
-			if i > 0 {
-				sb.WriteRune(',')
-			}
-			val = strings.ReplaceAll(val, `\`, `\\`)
-			val = strings.ReplaceAll(val, `"`, `\"`)
-			val = strings.ReplaceAll(val, `,`, `\,`)
-			sb.WriteString(val)
-		}
-		if hasVal && needsQuotes {
-			sb.WriteRune('"')
-		}
+		writeSvcParam(&sb, key, canonicalParams[key])
 	}
 	return sb.String()
+}
+
+func svcParamHasValue(vals []string) bool {
+	for _, val := range vals {
+		if len(val) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func svcParamNeedsQuotes(key string, vals []string) bool {
+	if svcParamAlwaysQuotes(key) {
+		return true
+	}
+	for _, val := range vals {
+		if strings.ContainsAny(val, `" `) {
+			return true
+		}
+	}
+	return false
+}
+
+func writeSvcParam(sb *strings.Builder, key string, vals []string) {
+	if key == "mandatory" {
+		vals = canonicalMandatoryValues(vals)
+	}
+	hasVal := svcParamHasValue(vals)
+	if !hasVal {
+		vals = nil
+	}
+	if sb.Len() > 0 {
+		sb.WriteRune(' ')
+	}
+	sb.WriteString(key)
+	quoted := hasVal && svcParamNeedsQuotes(key, vals)
+	if hasVal {
+		sb.WriteRune('=')
+	}
+	if quoted {
+		sb.WriteRune('"')
+	}
+	for i, val := range vals {
+		if i > 0 {
+			sb.WriteRune(',')
+		}
+		val = strings.ReplaceAll(val, `\`, `\\`)
+		val = strings.ReplaceAll(val, `"`, `\"`)
+		val = strings.ReplaceAll(val, `,`, `\,`)
+		sb.WriteString(val)
+	}
+	if quoted {
+		sb.WriteRune('"')
+	}
 }

@@ -10,9 +10,9 @@ import (
 
 func main() {
 	p := &powerdns.Provider{
-		ServerURL: "http://localhost", // required
-		ServerID:  "localhost",        // if left empty, defaults to localhost.
-		APIToken:  "asdfasdfasdf",     // required
+		ServerURL: "http://localhost",
+		ServerID:  "localhost",
+		APIToken:  "asdfasdfasdf",
 	}
 	_, err := p.AppendRecords(context.Background(), "example.org.", []libdns.Record{
 		libdns.RR{

@@ -1,45 +1,38 @@
-powerdns provider for [`libdns`](https://github.com/libdns/libdns)
-=======================
+# PowerDNS Provider for [`libdns`](https://github.com/libdns/libdns)
 
-[![Github Actions](https://github.com/libdns/powerdns/actions/workflows/go.yml/badge.svg)](https://github.com/libdns/powerdns/actions/workflows/go.yml)
-[![Go Reference](https://pkg.go.dev/badge/test.svg)](https://pkg.go.dev/github.com/libdns/powerdns)
+This package implements the [libdns interfaces](https://github.com/libdns/libdns) for [PowerDNS](https://powerdns.com), allowing you to manage DNS records.
 
-This package implements the [libdns interfaces](https://github.com/libdns/libdns) for 
-[PowerDNS](https://powerdns.com/), allowing you to 
-manage DNS records.
+It uses [mittwald/go-powerdns](https://github.com/mittwald/go-powerdns) under the covers to talk to PowerDNS.
 
-This uses [mittwald/go-powerdns](https://github.com/mittwald/go-powerdns) under the covers
-to actually talk to powerdns.
+To configure this, specify the server URL and the API token:
 
-To configure this, simply specify the server URL and the access token. 
+```go
+package main
 
+import (
+	"context"
 
-    package main
-    
-    import (
-        "context"
-    
-        "github.com/libdns/libdns"
-        "github.com/libdns/powerdns"
-    )
+	"github.com/libdns/libdns"
 
-    func main() {
-        p := &powerdns.Provider{
-            ServerURL: "http://localhost", // required
-            ServerID:  "localhost",        // if left empty, defaults to localhost.
-            APIToken:  "asdfasdfasdf",     // required
-        }
-    
-        _, err := p.AppendRecords(context.Background(), "example.org.", []libdns.Record{
-            {
-                Name:  "_acme_whatever",
-                Type:  "TXT",
-                Value: "123456",
-            },
-        })
-        if err != nil {
-            panic(err)
-        }
-    
-    }
+	powerdns "github.com/vapronva/libdns-powerdns"
+)
 
+func main() {
+	p := &powerdns.Provider{
+		ServerURL: "http://localhost", // required
+		ServerID:  "localhost",        // optional; defaults to "localhost"
+		APIToken:  "asdfasdfasdf",     // required
+		// Debug: "stderr",            // optional; logs the API token in cleartext
+	}
+	_, err := p.AppendRecords(context.Background(), "example.org.", []libdns.Record{
+		libdns.RR{
+			Name: "_acme_whatever",
+			Type: "TXT",
+			Data: "123456",
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+}
+```

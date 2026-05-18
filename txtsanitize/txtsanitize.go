@@ -1,71 +1,39 @@
 package txtsanitize
 
-import (
-	"bytes"
-	"strings"
-)
+import "strings"
 
-// TXTSanitize - attempts to make sure that the return value is enclosed in
-// double quotes, and any embedded double quotes are escaped properly with `\`.
-// It honors pre-escaped sequences inside, in that it ignores all but those
-// preceding an embedded double quote. The return value is idempotent, meaning
-// you can feed the output back into TXTSanitize and you should get the same
-// result as the initial call.  This is important so that we don't re-escape
-// things such as in the case when reading a TXT record from an API call and
-// sending the payload back in a subsequent update call.
 func TXTSanitize(in string) string {
-	quoted, contents := false, []byte(in)
-	if len(in) >= 2 {
-		quoted = contents[0] == '"' && contents[len(in)-1] == '"'
+	if isQuoted(in) {
+		return in
 	}
-	if quoted {
-		contents = contents[1 : len(in)-1]
-	}
-	escaped := 0
-	var bldr, out strings.Builder
-	for ind := 0; ind < len(contents); ind++ {
-		tInd := bytes.IndexByte(contents[ind:], '"')
-		if tInd == -1 {
-			bldr.Write(contents[ind:])
-			break
+	var b strings.Builder
+	b.Grow(len(in) + 2)
+	b.WriteByte('"')
+	for i := range len(in) {
+		if c := in[i]; c == '\\' || c == '"' {
+			b.WriteByte('\\')
 		}
-		bldr.Write(contents[ind : ind+tInd])
-		ind += tInd
-		// look for \", but be aware of \\" is not escaped, but \\\" is
-		escCt := 0
-		for j := ind - 1; j >= 0 && contents[j] == '\\'; j-- {
-			escCt++
-		}
-		if escCt%2 == 0 {
-			// add escape
-			escaped++
-			bldr.WriteByte('\\')
-		}
-		bldr.WriteByte('"')
+		b.WriteByte(in[i])
 	}
-	// This tries to catch the situation where we have something like:
-	// "foo" and other stuff "bar"
-	// and make sure we get:
-	// "\"foo\" and other stuff \"bar\""
-	// which is likely what we want, instead of:
-	// "foo\" and other stuff \"bar"
-	out.WriteByte('"')
-	outContent := bldr.String()
-	if trailingBackslashes(outContent)%2 == 1 {
-		outContent += `\`
-	}
-	if quoted && escaped > 0 && escaped%2 == 0 {
-		outContent = `\"` + outContent + `\"`
-	}
-	out.WriteString(outContent)
-	out.WriteByte('"')
-	return out.String()
+	b.WriteByte('"')
+	return b.String()
 }
 
-func trailingBackslashes(in string) int {
-	count := 0
-	for i := len(in) - 1; i >= 0 && in[i] == '\\'; i-- {
-		count++
+func isQuoted(s string) bool {
+	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
+		return false
 	}
-	return count
+	body := s[1 : len(s)-1]
+	for i := 0; i < len(body); i++ {
+		switch body[i] {
+		case '\\':
+			if i+1 >= len(body) || (body[i+1] != '\\' && body[i+1] != '"') {
+				return false
+			}
+			i++
+		case '"':
+			return false
+		}
+	}
+	return true
 }

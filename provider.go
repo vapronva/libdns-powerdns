@@ -1,36 +1,26 @@
-// Package powerdns implements a powerdns
 package powerdns
 
 import (
+	"cmp"
 	"context"
 	"io"
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/libdns/libdns"
 )
 
-// Provider facilitates DNS record manipulation with PowerDNS.
 type Provider struct {
-	// ServerURL is the location of the pdns server.
 	ServerURL string `json:"server_url"`
-	// ServerID is the id of the server.  localhost will be used
-	// if this is omitted.
-	ServerID string `json:"server_id,omitempty"`
-	// APIToken is the auth token.
-	APIToken string `json:"api_token,omitempty"`
-	// Debug - can set this to stdout or stderr to dump
-	// debugging information about the API interaction with
-	// powerdns.  This will dump your auth token in plain text
-	// so be careful.
-	Debug string `json:"debug,omitempty"`
-	mu    sync.Mutex
-	c     *client
+	ServerID  string `json:"server_id,omitempty"`
+	APIToken  string `json:"api_token,omitempty"`
+	Debug     string `json:"debug,omitempty"`
+	mu        sync.Mutex
+	writeMu   sync.Mutex
+	c         *client
 }
 
-// GetRecords lists all the records in the zone.
 func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
 	c, err := p.client()
 	if err != nil {
@@ -43,90 +33,70 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 	recs := make([]libdns.Record, 0, len(prec.ResourceRecordSets))
 	for _, rec := range prec.ResourceRecordSets {
 		for _, v := range rec.Records {
-			rr := libdns.RR{
-				Name: libdns.RelativeName(rec.Name, zone),
-				TTL:  time.Second * time.Duration(rec.TTL),
-				Type: rec.Type,
-				Data: v.Content,
-			}
-			lrec, err := rr.Parse()
-			if err != nil {
-				recs = append(recs, rr)
-				continue
-			}
-			recs = append(recs, lrec)
+			recs = append(recs, parseZoneRecord(zone, rec.Name, rec.Type, rec.TTL, v.Content))
 		}
 	}
 	return recs, nil
 }
 
-// AppendRecords adds records to the zone. It returns the records that were added.
 func (p *Provider) AppendRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
 	c, err := p.client()
 	if err != nil {
 		return nil, err
 	}
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
 	fullZone, err := c.fullZone(ctx, zone)
 	if err != nil {
-		return nil, err
+		return nil, libdns.AtomicErr(err)
 	}
-	rrecs, err := mergeRRecs(fullZone, convertNamesToAbsolute(zone, records))
-	if err != nil {
-		return nil, err
+	rrecs := mergeRRecs(fullZone, convertNamesToAbsolute(zone, records))
+	if err = c.updateRRs(ctx, fullZone.ID, rrecs); err != nil {
+		return nil, libdns.AtomicErr(err)
 	}
-	err = c.updateRRs(ctx, fullZone.ID, rrecs)
-	if err != nil {
-		return nil, err
-	}
-	return records, nil
+	return parseInputRecords(records), nil
 }
 
-// SetRecords sets the records in the zone, either by updating existing records or creating new ones.
-// It returns the updated records.
 func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
 	c, err := p.client()
 	if err != nil {
 		return nil, err
 	}
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
 	zID, err := c.zoneID(ctx, zone)
 	if err != nil {
-		return nil, err
+		return nil, libdns.AtomicErr(err)
 	}
-	inHash := makeLDRecHash(convertNamesToAbsolute(zone, records))
-	rRecs := convertLDHash(inHash)
-	err = c.updateRRs(ctx, zID, rRecs)
-	if err != nil {
-		return nil, err
+	rRecs := convertLDHash(makeLDRecHash(convertNamesToAbsolute(zone, records)))
+	if err = c.updateRRs(ctx, zID, rRecs); err != nil {
+		return nil, libdns.AtomicErr(err)
 	}
-	return records, nil
+	return recordsFromRRSets(zone, rRecs), nil
 }
 
-// DeleteRecords deletes the records from the zone. It returns the records that were deleted.
 func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
 	c, err := p.client()
 	if err != nil {
 		return nil, err
 	}
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
 	fullZone, err := c.fullZone(ctx, zone)
 	if err != nil {
-		return nil, err
+		return nil, libdns.AtomicErr(err)
 	}
-	rRSets := cullRRecs(fullZone, convertNamesToAbsolute(zone, records))
-	err = c.updateRRs(ctx, fullZone.ID, rRSets)
-	if err != nil {
-		return nil, err
+	rRSets, deleted := cullRRecs(zone, fullZone, convertNamesToAbsolute(zone, records), records)
+	if err = c.updateRRs(ctx, fullZone.ID, rRSets); err != nil {
+		return nil, libdns.AtomicErr(err)
 	}
-	return records, nil
+	return deleted, nil
 }
 
 func (p *Provider) client() (*client, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.c == nil {
-		var err error
-		if p.ServerID == "" {
-			p.ServerID = "localhost"
-		}
 		var debug io.Writer
 		switch strings.ToLower(p.Debug) {
 		case "stdout", "yes", "true", "1":
@@ -134,15 +104,15 @@ func (p *Provider) client() (*client, error) {
 		case "stderr":
 			debug = os.Stderr
 		}
-		p.c, err = newClient(p.ServerID, p.ServerURL, p.APIToken, debug)
+		c, err := newClient(cmp.Or(p.ServerID, "localhost"), p.ServerURL, p.APIToken, debug)
 		if err != nil {
 			return nil, err
 		}
+		p.c = c
 	}
 	return p.c, nil
 }
 
-// Interface guards
 var (
 	_ libdns.RecordGetter   = (*Provider)(nil)
 	_ libdns.RecordAppender = (*Provider)(nil)
