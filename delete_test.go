@@ -181,8 +181,68 @@ func TestDeleteRecords_TXTMatchUsesSanitizedValue(t *testing.T) {
 	if len(deleted) != 1 {
 		t.Fatalf("expected raw \"hello\" to match stored %q, got %#v", `"hello"`, deletedValues(deleted))
 	}
-	if _, ok := deleted[0].(libdns.TXT); !ok {
+	txt, ok := deleted[0].(libdns.TXT)
+	if !ok {
 		t.Fatalf("expected parsed libdns.TXT, got %T", deleted[0])
+	}
+	if txt.Text != "hello" {
+		t.Fatalf("deleted TXT.Text = %q, want raw (unquoted) %q", txt.Text, "hello")
+	}
+}
+
+func TestDeleteRecords_WildcardTypeSpecificDataTXT(t *testing.T) {
+	sets, deleted := runCull(newDeleteTestZone(), []libdns.Record{
+		libdns.RR{Name: "a", Type: "", Data: "hello"},
+	})
+	if len(deleted) != 1 {
+		t.Fatalf("wildcard Type with TXT Data must delete stored %q, got %#v", `"hello"`, deletedValues(deleted))
+	}
+	txt, ok := deleted[0].(libdns.TXT)
+	if !ok {
+		t.Fatalf("expected parsed libdns.TXT, got %T", deleted[0])
+	}
+	if txt.Text != "hello" {
+		t.Fatalf("deleted TXT.Text = %q, want raw %q", txt.Text, "hello")
+	}
+	if _, found := rrsetByName(sets, "a.example.org.", "A"); found {
+		t.Fatalf("A rrset must not be mutated when only the TXT value matched: %#v", sets)
+	}
+	if rs, found := rrsetByName(sets, "a.example.org.", "TXT"); !found || len(rs.Records) != 0 {
+		t.Fatalf("expected TXT rrset replaced with no survivors, got %#v", sets)
+	}
+}
+
+func TestDeleteRecords_WildcardTypeSpecificDataSPF(t *testing.T) {
+	z := &zones.Zone{ResourceRecordSets: []zones.ResourceRecordSet{{
+		Name: "a.example.org.", Type: "SPF", TTL: 120,
+		Records: []zones.Record{{Content: `"v=spf1 -all"`}},
+	}}}
+	_, deleted := runCull(z, []libdns.Record{
+		libdns.RR{Name: "a", Type: "", Data: "v=spf1 -all"},
+	})
+	if len(deleted) != 1 {
+		t.Fatalf("wildcard Type with SPF Data must delete stored %q, got %#v", `"v=spf1 -all"`, deletedValues(deleted))
+	}
+	if got := deleted[0].RR().Data; got != "v=spf1 -all" {
+		t.Fatalf("deleted SPF Data = %q, want unquoted %q", got, "v=spf1 -all")
+	}
+}
+
+func TestDeleteRecords_WildcardTypeIPDataDoesNotTouchTXT(t *testing.T) {
+	sets, deleted := runCull(newDeleteTestZone(), []libdns.Record{
+		libdns.RR{Name: "a", Type: "", Data: "192.0.2.1"},
+	})
+	if len(deleted) != 1 {
+		t.Fatalf("expected only the A 192.0.2.1 deleted, got %#v", deletedValues(deleted))
+	}
+	if _, ok := deleted[0].(libdns.Address); !ok {
+		t.Fatalf("expected libdns.Address, got %T", deleted[0])
+	}
+	if _, ok := rrsetByName(sets, "a.example.org.", "TXT"); ok {
+		t.Fatalf("TXT rrset must not be touched by a wildcard IP-value delete: %#v", sets)
+	}
+	if rs, ok := rrsetByName(sets, "a.example.org.", "A"); !ok || len(rs.Records) != 2 {
+		t.Fatalf("expected A rrset with 2 survivors, got %#v", sets)
 	}
 }
 

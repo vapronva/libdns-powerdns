@@ -64,12 +64,12 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 	}
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
-	zID, err := c.zoneID(ctx, zone)
+	sz, err := c.shortZone(ctx, zone)
 	if err != nil {
 		return nil, libdns.AtomicErr(err)
 	}
 	rRecs := convertLDHash(makeLDRecHash(convertNamesToAbsolute(zone, records)))
-	if err = c.updateRRs(ctx, zID, rRecs); err != nil {
+	if err = c.updateRRs(ctx, sz.ID, rRecs); err != nil {
 		return nil, libdns.AtomicErr(err)
 	}
 	return recordsFromRRSets(zone, rRecs), nil

@@ -84,6 +84,20 @@ func TestConvertNamesToAbsoluteCanonicalizesKnownGenericKeys(t *testing.T) {
 	}
 }
 
+func TestConvertNamesToAbsoluteCanonicalizesRawHTTPSRR(t *testing.T) {
+	out := convertNamesToAbsolute("example.org.", []libdns.Record{
+		libdns.RR{Name: "svc", Type: "HTTPS", Data: "1 . ipv4hint=192.0.2.1 alpn=h2"},
+	})
+	if len(out) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(out))
+	}
+	got := out[0].RR().Data
+	want := "1 . alpn=h2 ipv4hint=192.0.2.1"
+	if got != want {
+		t.Fatalf("raw HTTPS RR not canonicalized: got %q want %q", got, want)
+	}
+}
+
 func TestConvertNamesToAbsoluteSanitizesLowercaseTXTAndSPF(t *testing.T) {
 	tests := []struct {
 		name     string

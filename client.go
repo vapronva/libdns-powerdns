@@ -119,8 +119,14 @@ func cullPlans(fullZone *zones.Zone, converted, original []libdns.Record) map[in
 			case wantTTL != 0 && wantTTL != t.TTL:
 			case orig.Data == "":
 				plan(idx).all = true
-			case slices.ContainsFunc(t.Records, func(r zones.Record) bool { return r.Content == conv.Data }):
-				plan(idx).vals[conv.Data] = struct{}{}
+			default:
+				want := conv.Data
+				if charString(t.Type) {
+					want = txtsanitize.TXTSanitize(orig.Data)
+				}
+				if slices.ContainsFunc(t.Records, func(r zones.Record) bool { return r.Content == want }) {
+					plan(idx).vals[want] = struct{}{}
+				}
 			}
 		}
 	}
@@ -151,7 +157,19 @@ func cullRRecs(
 	return rRSets, deleted
 }
 
+func charString(typ string) bool {
+	switch strings.ToUpper(typ) {
+	case "TXT", "SPF":
+		return true
+	default:
+		return false
+	}
+}
+
 func parseZoneRecord(zone, name, typ string, ttl int, content string) libdns.Record {
+	if charString(typ) {
+		content = txtsanitize.TXTUnquote(content)
+	}
 	return parseRR(libdns.RR{
 		Name: libdns.RelativeName(name, zone),
 		TTL:  time.Duration(ttl) * time.Second,
@@ -251,14 +269,6 @@ func (c *client) shortZone(ctx context.Context, zoneName string) (*zones.Zone, e
 	return &shortZones[0], nil
 }
 
-func (c *client) zoneID(ctx context.Context, zoneName string) (string, error) {
-	shortZone, err := c.shortZone(ctx, zoneName)
-	if err != nil {
-		return "", err
-	}
-	return shortZone.ID, nil
-}
-
 func convertNamesToAbsolute(zone string, records []libdns.Record) []libdns.Record {
 	zone = canonicalZone(zone)
 	out := make([]libdns.Record, 0, len(records))
@@ -269,10 +279,13 @@ func convertNamesToAbsolute(zone string, records []libdns.Record) []libdns.Recor
 			r = svcbToRR(svcb)
 		case *libdns.ServiceBinding:
 			r = svcbToRR(*svcb)
+		default:
+			if sb, ok := svcbFromRR(r); ok {
+				r = svcbToRR(sb)
+			}
 		}
 		data := r.Data
-		uType := strings.ToUpper(r.Type)
-		if uType == "TXT" || uType == "SPF" {
+		if charString(r.Type) {
 			data = txtsanitize.TXTSanitize(data)
 		}
 		out = append(out, libdns.RR{
@@ -305,6 +318,20 @@ var svcParamCodeToName = func() map[int]string {
 	}
 	return m
 }()
+
+func svcbFromRR(r libdns.RR) (libdns.ServiceBinding, bool) {
+	switch strings.ToUpper(r.Type) {
+	case "HTTPS", "SVCB":
+	default:
+		return libdns.ServiceBinding{}, false
+	}
+	parsed, err := r.Parse()
+	if err != nil {
+		return libdns.ServiceBinding{}, false
+	}
+	sb, ok := parsed.(libdns.ServiceBinding)
+	return sb, ok
+}
 
 func svcbToRR(s libdns.ServiceBinding) libdns.RR {
 	rr := s.RR()

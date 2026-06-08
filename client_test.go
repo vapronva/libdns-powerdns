@@ -102,7 +102,7 @@ func TestPDNSClient(t *testing.T) {
 			zone:      "example.org.",
 			Type:      "TXT",
 			records:   []libdns.Record{libdns.RR{Name: "1", Type: "TXT", Data: `"This is also some text"`}},
-			want:      []string{`1:"This is text"`, `1:"This is also some text"`},
+			want:      []string{`1:This is text`, `1:This is also some text`},
 		},
 		{
 			name:      "Append unquoted TXT",
@@ -111,8 +111,8 @@ func TestPDNSClient(t *testing.T) {
 			Type:      "TXT",
 			records:   []libdns.Record{libdns.RR{Name: "1", Type: "TXT", Data: "This is some weird text that isn't quoted"}},
 			want: []string{
-				`1:"This is text"`, `1:"This is also some text"`,
-				`1:"This is some weird text that isn't quoted"`,
+				`1:This is text`, `1:This is also some text`,
+				`1:This is some weird text that isn't quoted`,
 			},
 		},
 		{
@@ -122,9 +122,9 @@ func TestPDNSClient(t *testing.T) {
 			Type:      "TXT",
 			records:   []libdns.Record{libdns.RR{Name: "1", Type: "TXT", Data: `This is some weird text that "has embedded quoting"`}},
 			want: []string{
-				`1:"This is text"`, `1:"This is also some text"`,
-				`1:"This is some weird text that isn't quoted"`,
-				`1:"This is some weird text that \"has embedded quoting\""`,
+				`1:This is text`, `1:This is also some text`,
+				`1:This is some weird text that isn't quoted`,
+				`1:This is some weird text that "has embedded quoting"`,
 			},
 		},
 		{
@@ -134,10 +134,10 @@ func TestPDNSClient(t *testing.T) {
 			Type:      "TXT",
 			records:   []libdns.Record{libdns.RR{Name: "1", Type: "TXT", Data: `ç is equal to \195\167`}},
 			want: []string{
-				`1:"This is text"`, `1:"This is also some text"`,
-				`1:"This is some weird text that isn't quoted"`,
-				`1:"This is some weird text that \"has embedded quoting\""`,
-				`1:"ç is equal to \\195\\167"`,
+				`1:This is text`, `1:This is also some text`,
+				`1:This is some weird text that isn't quoted`,
+				`1:This is some weird text that "has embedded quoting"`,
+				`1:ç is equal to \195\167`,
 			},
 		},
 		{
